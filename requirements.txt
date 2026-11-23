@@ -1,0 +1,3 @@
+flask>=3.0
+# 生产服务器（装有腾讯会议的 Windows 11 机器）才需要 GUI 自动化依赖：
+pywinauto>=0.6.8 ; sys_platform == 'win32'

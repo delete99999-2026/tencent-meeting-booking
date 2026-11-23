@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>腾讯会议预订平台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 登录页 -->
+<div id="login-view" class="login-wrap hidden">
+  <div class="login-card">
+    <div class="login-logo">📅</div>
+    <h1>腾讯会议预订平台</h1>
+    <p class="login-sub">登录后可预订会议、查看会议列表与个人统计</p>
+    <form id="login-form">
+      <div class="field">
+        <label>用户名</label>
+        <input type="text" id="login-username" autocomplete="username" placeholder="请输入用户名">
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input type="password" id="login-password" autocomplete="current-password" placeholder="请输入密码">
+      </div>
+      <div id="login-error" class="form-error"></div>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">登 录</button>
+    </form>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app-view" class="hidden">
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand">📅 腾讯会议预订平台</span>
+      <nav class="tabs">
+        <button class="tab active" data-tab="meetings">会议列表</button>
+        <button class="tab" data-tab="stats">我的统计</button>
+        <button class="tab" data-tab="admin" id="tab-admin-btn">用户管理</button>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <span id="user-chip" class="user-chip"></span>
+      <button class="btn btn-ghost" id="logout-btn">退出</button>
+    </div>
+  </header>
+
+  <main class="content">
+
+    <!-- 会议列表 -->
+    <section id="tab-meetings" class="tabpane">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>会议列表</h2>
+          <button class="btn btn-primary" id="book-open-btn">＋ 预订会议</button>
+        </div>
+        <div class="filter-bar">
+          <div class="field">
+            <label>开始日期</label>
+            <input type="date" id="f-from">
+          </div>
+          <div class="field">
+            <label>结束日期</label>
+            <input type="date" id="f-to">
+          </div>
+          <div class="field">
+            <label>创建者</label>
+            <input type="text" id="f-creator" placeholder="用户名">
+          </div>
+          <div class="field">
+            <label>主题关键字</label>
+            <input type="text" id="f-subject" placeholder="模糊匹配">
+          </div>
+          <div class="field">
+            <label>排序</label>
+            <select id="f-sort">
+              <option value="created_at">创建时间（最新在前）</option>
+              <option value="start_at">开始时间</option>
+              <option value="subject">名称</option>
+              <option value="creator">创建者</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>方向</label>
+            <select id="f-dir">
+              <option value="desc">降序</option>
+              <option value="asc">升序</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="f-query">查询</button>
+          <button class="btn btn-ghost" id="f-reset">重置</button>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>主题</th>
+                <th>开始时间</th>
+                <th>时长</th>
+                <th>结束时间</th>
+                <th>创建者</th>
+                <th>状态</th>
+                <th>腾讯会议号</th>
+                <th>创建时间</th>
+                <th class="th-ops">操作</th>
+              </tr>
+            </thead>
+            <tbody id="meeting-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 我的统计 -->
+    <section id="tab-stats" class="tabpane hidden">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>我的会议统计（仅已预订成功）</h2>
+          <div class="seg">
+            <button class="seg-btn active" data-period="month">按月</button>
+            <button class="seg-btn" data-period="quarter">按季</button>
+            <button class="seg-btn" data-period="year">按年</button>
+          </div>
+        </div>
+        <div class="stat-summary" id="stat-summary"></div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th id="stat-period-th">月份</th><th>会议数</th><th>累计时长</th></tr>
+            </thead>
+            <tbody id="stat-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 用户管理（管理员） -->
+    <section id="tab-admin" class="tabpane hidden">
+      <div class="panel">
+        <div class="panel-head"><h2>新增用户</h2></div>
+        <div class="filter-bar">
+          <div class="field">
+            <label>用户名</label>
+            <input type="text" id="nu-username" placeholder="2-20位字母/数字/_/-">
+          </div>
+          <div class="field">
+            <label>显示名</label>
+            <input type="text" id="nu-display">
+          </div>
+          <div class="field">
+            <label>角色</label>
+            <select id="nu-role">
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>初始密码</label>
+            <input type="text" id="nu-password" placeholder="留空则自动生成">
+          </div>
+          <button class="btn btn-primary" id="nu-create">创建</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>用户列表</h2></div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>ID</th><th>用户名</th><th>显示名</th><th>角色</th>
+                <th>登录失败</th><th>锁定至</th><th>创建时间</th><th class="th-ops">操作</th>
+              </tr>
+            </thead>
+            <tbody id="user-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>任务队列（最近 50 条）</h2></div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>ID</th><th>类型</th><th>会议ID</th><th>主题</th>
+                <th>腾讯会议号</th><th>状态</th><th>下次执行</th><th>说明</th>
+              </tr>
+            </thead>
+            <tbody id="queue-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 预订/编辑弹窗 -->
+<div id="modal-mask" class="modal-mask hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">预订会议</h3>
+      <button class="modal-close" id="modal-close">✕</button>
+    </div>
+    <form id="modal-form">
+      <input type="hidden" id="m-id">
+      <div class="field">
+        <label>会议主题</label>
+        <input type="text" id="m-subject" maxlength="80" placeholder="例如：周例会">
+      </div>
+      <div class="field">
+        <label>开始时间（点击选择日期时间）</label>
+        <input type="datetime-local" id="m-start">
+      </div>
+      <div class="field">
+        <label>时长（15 分钟起，每 15 分钟一档，最长 4 小时）</label>
+        <select id="m-duration">
+          <option value="15">15 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="45">45 分钟</option>
+          <option value="60" selected>60 分钟（1 小时）</option>
+          <option value="75">75 分钟（1.25 小时）</option>
+          <option value="90">90 分钟（1.5 小时）</option>
+          <option value="105">105 分钟（1.75 小时）</option>
+          <option value="120">120 分钟（2 小时）</option>
+          <option value="135">135 分钟（2.25 小时）</option>
+          <option value="150">150 分钟（2.5 小时）</option>
+          <option value="165">165 分钟（2.75 小时）</option>
+          <option value="180">180 分钟（3 小时）</option>
+          <option value="195">195 分钟（3.25 小时）</option>
+          <option value="210">210 分钟（3.5 小时）</option>
+          <option value="225">225 分钟（3.75 小时）</option>
+          <option value="240">240 分钟（4 小时）</option>
+        </select>
+      </div>
+      <div id="modal-end-preview" class="end-preview"></div>
+      <div id="modal-error" class="form-error"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="modal-cancel">取消</button>
+        <button type="submit" class="btn btn-primary" id="modal-submit">确定</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

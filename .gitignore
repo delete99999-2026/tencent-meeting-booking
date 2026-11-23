@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 运行时数据（含用户/会议信息，绝不入库）
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 日志与诊断报告（可能含会议号/窗口坐标等环境信息）
+*.log
+scripts/*_report.txt
+scripts/headless_snapshot.txt
+scripts/keep_session_result.txt
+diag_env_report.txt
+diag_env_screen.png
+driver_failure.log
+
+# 截图与 OCR 临时产物
+*.png
+*_ocr.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

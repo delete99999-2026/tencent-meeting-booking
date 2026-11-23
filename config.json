@@ -1,0 +1,30 @@
+{
+  "host": "127.0.0.1",
+  "port": 8000,
+  "session_days": 7,
+  "max_login_fails": 5,
+  "lock_minutes": 10,
+  "lead_minutes": 5,
+  "max_duration_min": 240,
+  "auto_retry": 2,
+  "retry_interval_sec": 60,
+  "driver_mode": "pywinauto",
+  "db_path": "data/meeting.db",
+  "seed_admin": { "username": "admin", "password": "Admin@123456", "display_name": "超级管理员" },
+  "tm": {
+    "exe": "C:\\Program Files\\Tencent\\Meeting\\WeMeetApp.exe",
+    "main_window_re": "腾讯会议",
+    "book_button": "预定会议",
+    "dialog_title_re": "预定会议",
+    "subject_field": "主题",
+    "start_time_field": "开始时间",
+    "end_time_field": "结束时间",
+    "date_field": "会议时间",
+    "ok_button": "确定",
+    "success_toast_re": "预定成功|已预定|预订成功",
+    "my_meetings_tab": "我发起的会议",
+    "delete_menu": "取消会议",
+    "delete_confirm": "取消会议",
+    "timeouts": { "dialog": 8, "field": 5, "list": 8 }
+  }
+}
