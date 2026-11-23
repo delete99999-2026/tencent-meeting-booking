@@ -312,6 +312,8 @@ def main():
     tid = (db.get_meeting(db_path, pwd_mid) or {})["tm_meeting_id"] if db.get_meeting(db_path, pwd_mid) else None
     want_no = f"{tid[0:3]}-{tid[3:6]}-{tid[6:9]}" if tid and len(tid) == 9 else None
     check("邀请-会议号 3-3-3 格式", bool(want_no) and want_no in txt, f"tid={tid} txt={txt}")
+    check("邀请-微信可点击口令 #腾讯会议：", f"#腾讯会议：{want_no}" in txt if want_no else False,
+          f"tid={tid} txt={txt}")
     check("邀请-含会议密码", "会议密码：246810" in txt, txt)
     check("邀请-含入会链接", "meeting.tencent.com/dm/" in txt, txt)
     r = client.post(f"/api/meetings/{pwd_mid}/copy-invite", headers=EH())

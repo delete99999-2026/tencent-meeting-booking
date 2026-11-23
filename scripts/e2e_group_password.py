@@ -135,6 +135,7 @@ def main():
                 text = r.get("text", "")
                 check("邀请文本含 GMT+08（%s）" % who, "GMT+08" in text, text[:120])
                 check("邀请文本含密码（%s）" % who, "135790" in text, text[:200])
+                check("邀请文本含微信口令 #腾讯会议：（%s）" % who, "#腾讯会议：" in text, text[:200])
 
     # 按群组筛选用户
     st, r = call("GET", "/api/users?group=" + quote(grp), admin_tok)

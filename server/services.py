@@ -436,7 +436,10 @@ def _brief_masked(db: str, row, user) -> dict:
 
 
 def build_invite_text(row) -> str:
-    """邀请文本：主题 / 起止时间(GMT+08) / 入会链接(有则带) / 9 位会议号 3-3-3。"""
+    """邀请文本：主题 / 起止时间(GMT+08) / 入会链接(有则带) / #腾讯会议：9 位号 3-3-3。
+
+    会议号行采用 "#腾讯会议：<3-3-3 会议号>" 口令格式，粘贴到微信后可被点击唤起手机腾讯会议直接入会。
+    """
     tid = (row["tm_meeting_id"] or "").strip()
     if len(tid) == 9 and tid.isdigit():
         tid_disp = f"{tid[0:3]}-{tid[3:6]}-{tid[6:9]}"
@@ -449,9 +452,10 @@ def build_invite_text(row) -> str:
     if row["invite_link"]:
         lines.append(f"入会链接：{row['invite_link']}")
     if tid_disp:
-        lines.append(f"会议号：{tid_disp}")
+        # "#腾讯会议：<会议号>" 是微信可点击的口令格式，点击可唤起手机腾讯会议入会
+        lines.append(f"#腾讯会议：{tid_disp}")
     else:
-        lines.append("会议号：预定成功后可见")
+        lines.append("#腾讯会议：预定成功后可见")
     if row["meeting_password"]:
         lines.append(f"会议密码：{row['meeting_password']}")
     return "\n".join(lines)
