@@ -12,6 +12,9 @@ import time
 
 _local = threading.local()
 
+# 更新用户资料时的“未提供该字段”哨兵：与 None 区分（None 表示显式清空群组等）
+UNSET = object()
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,17 +149,26 @@ def create_user(db: str, username: str, password_hash: str,
 
 
 def update_user_profile(db: str, uid: int, display_name: str = None, role: str = None,
-                        group_name: str = None) -> None:
+                        group_name=UNSET, username: str = None) -> None:
+    """更新用户资料（管理员编辑）。
+
+    各字段的语义：
+      display_name / role / username : None = 不修改
+      group_name                     : UNSET = 不修改；None 或 "" = 清空群组；其他 = 设为该群组
+    """
     sets, vals = [], []
+    if username is not None:
+        sets.append("username = ?")
+        vals.append(username)
     if display_name is not None:
         sets.append("display_name = ?")
         vals.append(display_name)
     if role is not None:
         sets.append("role = ?")
         vals.append(role)
-    if group_name is not None:
+    if group_name is not UNSET:
         sets.append("group_name = ?")
-        vals.append(group_name)
+        vals.append(group_name or None)
     sets.append("updated_at = ?")
     vals.append(now_str())
     vals.append(uid)
@@ -164,6 +176,27 @@ def update_user_profile(db: str, uid: int, display_name: str = None, role: str =
         f"UPDATE users SET {', '.join(sets)} WHERE id = ?", vals
     )
     connect(db).commit()
+
+
+def username_taken(db: str, username: str, exclude_id: int = None) -> bool:
+    """用户名是否已被占用（大小写不敏感，与 users.username 的 COLLATE NOCASE 一致）。"""
+    conn = connect(db)
+    sql = "SELECT id FROM users WHERE username = ?"
+    vals = [username]
+    if exclude_id is not None:
+        sql += " AND id != ?"
+        vals.append(exclude_id)
+    return conn.execute(sql, vals).fetchone() is not None
+
+
+def list_groups(db: str) -> list:
+    """已使用的群组名（去重、按名称排序），供前端下拉提示。"""
+    conn = connect(db)
+    rows = conn.execute(
+        "SELECT DISTINCT group_name FROM users "
+        "WHERE group_name IS NOT NULL AND TRIM(group_name) != '' ORDER BY group_name"
+    ).fetchall()
+    return [r["group_name"] for r in rows]
 
 
 def set_password_hash(db: str, uid: int, password_hash: str) -> None:
@@ -345,6 +378,15 @@ def set_meeting_cancelled(db: str, mid: int) -> None:
     connect(db).commit()
 
 
+def purge_meeting(db: str, mid: int) -> None:
+    """彻底删除会议行（清理状态错误、无法修复的记录时使用）。
+
+    tm_tasks 对 meetings 的外键是 ON DELETE SET NULL，取消任务仍凭 tm_meeting_id 存活。
+    """
+    connect(db).execute("DELETE FROM meetings WHERE id = ?", (mid,))
+    connect(db).commit()
+
+
 def set_meeting_pending(db: str, mid: int) -> None:
     """failed -> pending（手动重试）。"""
     connect(db).execute(
@@ -367,7 +409,16 @@ def set_meeting_rebooking(db: str, mid: int) -> None:
 def list_meetings(db: str, from_date: str = None, to_date: str = None,
                   creator: str = None, subject_kw: str = None,
                   sort_key: str = "created_at", sort_dir: str = "desc",
-                  limit: int = 200):
+                  display_status: str = None, only_anomaly: bool = False,
+                  stuck_minutes: int = 30, limit: int = 200):
+    """会议列表。
+
+    display_status 是按时间推导的展示状态（与 services._phase_of 口径一致）：
+      upcoming = booked 且未开始；ongoing = booked 且进行中；ended = booked 且已结束；
+      pending / failed / cancelled = 对应流程状态。
+    only_anomaly 只返回状态异常的记录（见 services._anomaly_of）。
+    """
+    now = now_str()
     sql = (
         "SELECT m.*, u.username AS creator_username, u.display_name AS creator_display_name, "
         "u.group_name AS creator_group "
@@ -390,6 +441,32 @@ def list_meetings(db: str, from_date: str = None, to_date: str = None,
     if subject_kw:
         sql += " AND m.subject LIKE ?"
         vals.append(f"%{subject_kw}%")
+    if display_status:
+        ds = str(display_status).strip()
+        if ds == "upcoming":
+            sql += " AND m.status = 'booked' AND m.start_at > ?"
+            vals.append(now)
+        elif ds == "ongoing":
+            sql += " AND m.status = 'booked' AND m.start_at <= ? AND m.end_at > ?"
+            vals += [now, now]
+        elif ds == "ended":
+            sql += " AND m.status = 'booked' AND m.end_at <= ?"
+            vals.append(now)
+        elif ds in ("pending", "failed", "cancelled"):
+            sql += " AND m.status = ?"
+            vals.append(ds)
+    if only_anomaly:
+        stuck_at = time.strftime("%Y-%m-%d %H:%M",
+                                 time.localtime(time.time() - stuck_minutes * 60))
+        # created_at 可能带秒（历史/手工数据），统一截到分钟再比较，避免边界误差
+        sql += (
+            " AND ("
+            " (m.status = 'booked' AND (m.tm_meeting_id IS NULL OR TRIM(m.tm_meeting_id) = ''))"
+            " OR (m.status IN ('pending','failed') AND m.start_at <= ?)"
+            " OR (m.status = 'pending' AND SUBSTR(m.created_at, 1, 16) <= ?)"
+            ")"
+        )
+        vals += [now, stuck_at]
     allowed = {"created_at": "m.created_at", "subject": "m.subject",
                "creator": "u.username", "start_at": "m.start_at"}
     col = allowed.get(sort_key, "m.created_at")
@@ -494,20 +571,42 @@ def list_recent_tasks(db: str, limit: int = 50):
 
 # ---------------- stats ----------------
 
-def booked_stats(db: str, period: str, uid: int):
-    """某用户 booked 会议按 月/季/年 分组累计时长。返回 [(period, total_min, count), ...] 倒序。"""
+def _period_col(period: str) -> str:
     if period == "month":
-        gcol = "strftime('%Y-%m', start_at)"
-    elif period == "quarter":
-        gcol = "strftime('%Y', start_at) || '-Q' || ((CAST(strftime('%m', start_at) AS INTEGER) - 1) / 3 + 1)"
-    elif period == "year":
-        gcol = "strftime('%Y', start_at)"
-    else:
-        raise ValueError("period must be month/quarter/year")
-    conn = connect(db)
-    return conn.execute(
-        f"SELECT {gcol} AS period, SUM(duration_min) AS total_min, COUNT(*) AS cnt "
-        f"FROM meetings WHERE status='booked' AND creator_id = ? "
-        f"GROUP BY period ORDER BY period DESC",
-        (uid,),
+        return "strftime('%Y-%m', start_at)"
+    if period == "quarter":
+        return ("strftime('%Y', start_at) || '-Q' || "
+                "((CAST(strftime('%m', start_at) AS INTEGER) - 1) / 3 + 1)")
+    if period == "year":
+        return "strftime('%Y', start_at)"
+    raise ValueError("period must be month/quarter/year")
+
+
+def booked_stats(db: str, period: str, uid: int = None):
+    """booked 会议按 月/季/年 分组累计时长，返回 [(period, total_min, count), ...] 倒序。
+
+    uid 为 None 时统计全平台（管理员用），否则只统计该用户。
+    """
+    gcol = _period_col(period)
+    sql = (f"SELECT {gcol} AS period, SUM(duration_min) AS total_min, COUNT(*) AS cnt "
+           f"FROM meetings WHERE status='booked'")
+    args = []
+    if uid is not None:
+        sql += " AND creator_id = ?"
+        args.append(uid)
+    sql += " GROUP BY period ORDER BY period DESC"
+    return connect(db).execute(sql, args).fetchall()
+
+
+def booked_stats_by_user(db: str, period: str):
+    """全平台按用户 × 周期统计（管理员用）。返回含 username/display_name 的行。"""
+    gcol = _period_col(period)
+    return connect(db).execute(
+        f"SELECT m.creator_id AS creator_id, u.username AS username, "
+        f"u.display_name AS display_name, {gcol} AS period, "
+        f"SUM(m.duration_min) AS total_min, COUNT(*) AS cnt "
+        f"FROM meetings m LEFT JOIN users u ON u.id = m.creator_id "
+        f"WHERE m.status='booked' "
+        f"GROUP BY m.creator_id, period ORDER BY period DESC, total_min DESC"
     ).fetchall()
+

@@ -125,6 +125,8 @@ def create_app(cfg: dict = None) -> Flask:
             "subject": request.args.get("subject"),
             "sort_key": request.args.get("sort_key", "created_at"),
             "sort_dir": request.args.get("sort_dir", "desc"),
+            "display_status": request.args.get("display_status"),
+            "anomaly": request.args.get("anomaly"),
         }
         return jsonify(services.list_meetings(db_path, user, args))
 
@@ -173,8 +175,23 @@ def create_app(cfg: dict = None) -> Flask:
         user = current_user()
         if user is None:
             return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
+        purge = str(request.args.get("purge", "")).strip().lower() in ("1", "true", "yes")
         try:
-            return jsonify(services.delete_meeting(db_path, user, driver, mid))
+            return jsonify(services.delete_meeting(db_path, user, driver, mid, purge=purge))
+        except services.ApiError as e:
+            return _err(e)
+
+    @app.post("/api/meetings/batch-delete")
+    def api_batch_delete_meetings():
+        """管理员批量删除会议（清理状态错误的记录）。"""
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
+        data = request.get_json(silent=True) or {}
+        try:
+            return jsonify(services.batch_delete_meetings(
+                db_path, user, data.get("ids") or [],
+                purge=bool(data.get("purge"))))
         except services.ApiError as e:
             return _err(e)
 
@@ -216,7 +233,10 @@ def create_app(cfg: dict = None) -> Flask:
         if user is None:
             return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
         try:
-            return jsonify(services.get_stats(db_path, user, request.args.get("period", "month")))
+            return jsonify(services.get_stats(
+                db_path, user,
+                request.args.get("period", "month"),
+                scope=request.args.get("scope", "me")))
         except services.ApiError as e:
             return _err(e)
 
@@ -256,11 +276,24 @@ def create_app(cfg: dict = None) -> Flask:
         if user is None:
             return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
         data = request.get_json(silent=True) or {}
+        # group_name 用哨兵区分“未提供该字段”和“显式清空群组”
+        group = data["group_name"] if "group_name" in data else db.UNSET
         try:
             return jsonify(services.update_user(
                 db_path, user, uid,
                 data.get("display_name"), data.get("role"),
-                data.get("group_name", "")))
+                group, data.get("username")))
+        except services.ApiError as e:
+            return _err(e)
+
+    @app.get("/api/groups")
+    def api_list_groups():
+        """已有群组名列表（编辑用户时的下拉提示）。"""
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
+        try:
+            return jsonify(services.list_groups(db_path, user))
         except services.ApiError as e:
             return _err(e)
 

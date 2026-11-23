@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -357,6 +358,209 @@ def main():
     check("统计-年度", r.status_code == 200 and r.get_json()["period"] == "year")
     r = client.get("/api/stats?period=week", headers=AH())
     check("统计-非法 period 400", r.status_code == 400)
+
+    # ---------- 用户资料编辑（显示名 / 用户名 / 群组 / 角色） ----------
+    r = client.post("/api/users", headers=H(), json={
+        "username": "frank", "display_name": "弗兰克", "group_name": "甲组"})
+    j = r.get_json()
+    frank_id, frank_pwd = j["id"], j["password"]
+    check("用户编辑-创建带群组 201", r.status_code == 201 and j["group_name"] == "甲组")
+
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={
+        "display_name": "弗兰克v2", "group_name": "乙组"})
+    j = r.get_json()
+    check("用户编辑-改显示名+群组",
+          r.status_code == 200 and j["display_name"] == "弗兰克v2" and j["group_name"] == "乙组", j)
+
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={"username": "frank2"})
+    check("用户编辑-改用户名", r.status_code == 200 and r.get_json()["username"] == "frank2",
+          r.get_json())
+
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={"username": "admin"})
+    check("用户编辑-用户名重名 409", r.status_code == 409, r.get_json())
+
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={"username": "bad name!"})
+    check("用户编辑-用户名非法 400", r.status_code == 400, r.get_json())
+
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={"group_name": ""})
+    check("用户编辑-清空群组", r.status_code == 200 and r.get_json()["group_name"] is None,
+          r.get_json())
+
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={"group_name": "x" * 41})
+    check("用户编辑-群组超长 400", r.status_code == 400, r.get_json())
+
+    # 未提供 group_name 时不改动（哨兵语义）
+    client.put(f"/api/users/{frank_id}", headers=H(), json={"group_name": "丙组"})
+    r = client.put(f"/api/users/{frank_id}", headers=H(), json={"display_name": "弗兰克v3"})
+    check("用户编辑-未传群组则保持不变",
+          r.status_code == 200 and r.get_json()["group_name"] == "丙组", r.get_json())
+
+    # 群组列表接口
+    r = client.get("/api/groups", headers=H())
+    groups = r.get_json()["items"]
+    check("群组列表-含丙组", r.status_code == 200 and "丙组" in groups, groups)
+    r = client.get("/api/groups", headers=AH())
+    check("群组列表-普通用户 403", r.status_code == 403)
+
+    # 角色保护：不能取消自己的管理员身份 / 不能降级最后一个管理员
+    r = client.put(f"/api/users/{admin['id']}", headers=H(), json={"role": "user"})
+    check("用户编辑-不能取消自己管理员 400", r.status_code == 400, r.get_json())
+
+    # 普通用户不能调用用户编辑
+    r = client.put(f"/api/users/{frank_id}", headers=AH(), json={"display_name": "hack"})
+    check("用户编辑-普通用户 403", r.status_code == 403)
+
+    # 改名后可用新用户名登录（旧名失效）
+    r = client.post("/api/login", json={"username": "frank2", "password": frank_pwd})
+    check("用户编辑-新用户名可登录", r.status_code == 200)
+    r = client.post("/api/login", json={"username": "frank", "password": frank_pwd})
+    check("用户编辑-旧用户名失效", r.status_code == 401)
+
+    # ---------- 展示状态：已预订 / 会议中 / 已结束 ----------
+    def insert_meeting(subject, offset_min, dur, status, tm_no="123456789", creator=alice_id):
+        """直接插库造任意时间/状态的会议，绕过 API 的 lead 与冲突校验。"""
+        t = time.localtime(time.time() + offset_min * 60)
+        s = time.strftime("%Y-%m-%d %H:%M", t)
+        e = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.mktime(t) + dur * 60))
+        mid = db.create_meeting(db_path, subject, s, dur, e, creator)
+        if status == "booked":
+            db.set_meeting_booked(db_path, mid, tm_no)
+        elif status == "failed":
+            db.set_meeting_failed(db_path, mid, "err", 3)
+        elif status == "cancelled":
+            db.set_meeting_cancelled(db_path, mid)
+        return mid
+
+    m_up = insert_meeting("未来会议", 120, 60, "booked")
+    m_on = insert_meeting("进行中会议", -10, 60, "booked")
+    m_end = insert_meeting("已结束会议", -120, 60, "booked")
+    rows = {x["id"]: x for x in client.get("/api/meetings", headers=H()).get_json()["items"]}
+    check("状态-未到时间=已预订",
+          rows[m_up]["display_status"] == "已预订" and rows[m_up]["phase"] == "upcoming",
+          rows[m_up]["display_status"])
+    check("状态-进行中=会议中",
+          rows[m_on]["display_status"] == "会议中" and rows[m_on]["phase"] == "ongoing",
+          rows[m_on]["display_status"])
+    check("状态-已过期=已结束",
+          rows[m_end]["display_status"] == "已结束" and rows[m_end]["phase"] == "ended",
+          rows[m_end]["display_status"])
+
+    r = client.get("/api/meetings?display_status=ongoing", headers=H())
+    check("状态筛选-会议中", [x["id"] for x in r.get_json()["items"]] == [m_on],
+          [x["id"] for x in r.get_json()["items"]])
+    r = client.get("/api/meetings?display_status=upcoming", headers=H())
+    ids_up = [x["id"] for x in r.get_json()["items"]]
+    check("状态筛选-已预订", m_up in ids_up and m_end not in ids_up, ids_up)
+    r = client.get("/api/meetings?display_status=ended", headers=H())
+    ids_end = [x["id"] for x in r.get_json()["items"]]
+    check("状态筛选-已结束", m_end in ids_end and m_up not in ids_end, ids_end)
+
+    # ---------- 状态异常检测 ----------
+    m_bad = insert_meeting("无会议号的已预订", 240, 30, "booked", tm_no=None)
+    db.connect(db_path).execute("UPDATE meetings SET tm_meeting_id=NULL WHERE id=?", (m_bad,))
+    db.connect(db_path).commit()
+    m_past_pending = insert_meeting("过期的预订中", -60, 30, "pending")
+    r = client.get("/api/meetings?anomaly=1", headers=H())
+    ids_anom = [x["id"] for x in r.get_json()["items"]]
+    check("异常-检出缺会议号的已预订", m_bad in ids_anom, ids_anom)
+    check("异常-检出过期仍预订中", m_past_pending in ids_anom, ids_anom)
+    check("异常-正常会议不在异常列表", m_up not in ids_anom, ids_anom)
+    rows = {x["id"]: x for x in client.get("/api/meetings", headers=H()).get_json()["items"]}
+    check("异常-返回原因文本", bool(rows[m_bad]["anomaly_reason"]) and rows[m_bad]["status_anomaly"],
+          rows[m_bad])
+
+    # A3：pending 超 30 分钟未完成；created_at 可能带秒（历史数据），两种格式都要能识别
+    m_stuck = insert_meeting("卡住的预订任务", 2880, 30, "pending")
+    m_stuck_sec = insert_meeting("卡住的预订任务带秒", 2880, 30, "pending")
+    conn = db.connect(db_path)
+    conn.execute("UPDATE meetings SET created_at=? WHERE id=?",
+                 ((datetime.now() - timedelta(minutes=90)).strftime("%Y-%m-%d %H:%M"), m_stuck))
+    conn.execute("UPDATE meetings SET created_at=? WHERE id=?",
+                 ((datetime.now() - timedelta(minutes=90)).strftime("%Y-%m-%d %H:%M:%S"), m_stuck_sec))
+    conn.commit()
+    rows = {x["id"]: x for x in client.get("/api/meetings", headers=H()).get_json()["items"]}
+    check("异常-检出 pending 超 30 分钟（分钟精度）", rows[m_stuck]["status_anomaly"],
+          rows[m_stuck]["anomaly_reason"])
+    check("异常-检出 pending 超 30 分钟（带秒时间戳）", rows[m_stuck_sec]["status_anomaly"],
+          rows[m_stuck_sec]["anomaly_reason"])
+    ids_anom = [x["id"] for x in client.get("/api/meetings?anomaly=1", headers=H()).get_json()["items"]]
+    check("异常-筛选含两种时间戳格式", m_stuck in ids_anom and m_stuck_sec in ids_anom, ids_anom)
+
+    # ---------- 批量删除（管理员） ----------
+    r = client.post("/api/meetings/batch-delete", headers=H(),
+                    json={"ids": [m_bad, m_past_pending]})
+    j = r.get_json()
+    check("批量删除-2 条 200", r.status_code == 200 and j["count"] == 2, j)
+    check("批量删除-软删除后为已取消",
+          (db.get_meeting(db_path, m_bad) or {})["status"] == "cancelled")
+
+    r = client.post("/api/meetings/batch-delete", headers=H(), json={"ids": []})
+    check("批量删除-空列表 400", r.status_code == 400, r.get_json())
+    r = client.post("/api/meetings/batch-delete", headers=H(), json={"ids": ["abc"]})
+    check("批量删除-非整数 400", r.status_code == 400, r.get_json())
+    r = client.post("/api/meetings/batch-delete", headers=H(), json={"ids": [999999]})
+    j = r.get_json()
+    check("批量删除-不存在则跳过", r.status_code == 200 and j["count"] == 0 and j["skipped"], j)
+
+    # 已取消的会议：管理员批量删除时会真正移除记录（软删除对它是空操作）
+    r = client.post("/api/meetings/batch-delete", headers=H(), json={"ids": [m_bad]})
+    j = r.get_json()
+    check("批量删除-已取消也删除", r.status_code == 200 and j["count"] == 1, j)
+    check("批量删除-已取消记录被移除", db.get_meeting(db_path, m_bad) is None)
+    check("批量删除-已取消计入 purged_ids", m_bad in (j.get("purged_ids") or []), j)
+
+    # 普通用户即使删自己的会议也不允许批量
+    r = client.post("/api/meetings/batch-delete", headers=AH(), json={"ids": [m_up]})
+    check("批量删除-普通用户 403", r.status_code == 403, r.get_json())
+
+    # 彻底删除（状态错误无法修正时使用）
+    r = client.post("/api/meetings/batch-delete", headers=H(),
+                    json={"ids": [m_end], "purge": True})
+    check("批量删除-彻底删除", r.status_code == 200 and r.get_json()["purged"] is True, r.get_json())
+    check("批量删除-彻底删除后行已消失", db.get_meeting(db_path, m_end) is None)
+
+    # 单条彻底删除
+    r = client.delete(f"/api/meetings/{m_on}?purge=1", headers=H())
+    check("单条删除-彻底删除", r.status_code == 200 and db.get_meeting(db_path, m_on) is None,
+          r.get_json())
+    r = client.delete(f"/api/meetings/{m_up}?purge=1", headers=AH())
+    check("单条删除-普通用户 purge 403", r.status_code == 403, r.get_json())
+
+    # ---------- 已取消会议可被管理员与创建者删除 ----------
+    m_c1 = insert_meeting("已取消-管理员删", 120, 30, "cancelled")
+    r = client.delete(f"/api/meetings/{m_c1}", headers=H())
+    check("已取消-管理员删除 200", r.status_code == 200, r.get_json())
+    check("已取消-管理员删除后记录移除", db.get_meeting(db_path, m_c1) is None)
+
+    m_c2 = insert_meeting("已取消-创建者删", 180, 30, "cancelled", creator=alice_id)
+    r = client.delete(f"/api/meetings/{m_c2}", headers=AH())
+    check("已取消-创建者删除 200", r.status_code == 200, r.get_json())
+    check("已取消-创建者删除后记录移除", db.get_meeting(db_path, m_c2) is None)
+
+    # 非创建者的普通用户仍不能删别人的已取消会议
+    m_c3 = insert_meeting("已取消-他人删", 240, 30, "cancelled", creator=admin["id"])
+    r = client.delete(f"/api/meetings/{m_c3}", headers=AH())
+    check("已取消-非创建者普通用户 403", r.status_code == 403, r.get_json())
+
+    # ---------- 统计：管理员可看全平台 ----------
+    r = client.get("/api/stats?period=month&scope=me", headers=AH())
+    j_me = r.get_json()
+    check("统计-scope=me 结构", r.status_code == 200 and j_me["scope"] == "me"
+          and "by_user" not in j_me, list(j_me.keys()))
+    r = client.get("/api/stats?period=month&scope=all", headers=AH())
+    check("统计-普通用户 scope=all 403", r.status_code == 403, r.get_json())
+
+    r = client.get("/api/stats?period=month&scope=all", headers=H())
+    j_all = r.get_json()
+    check("统计-管理员 scope=all 200", r.status_code == 200 and j_all["scope"] == "all", r.status_code)
+    check("统计-全平台含 by_user 明细", isinstance(j_all.get("by_user"), list), list(j_all.keys()))
+    check("统计-全平台总量不少于个人",
+          j_all["total_min"] >= j_me["total_min"] and j_all["count"] >= j_me["count"],
+          (j_all["count"], j_me["count"]))
+    check("统计-全平台明细含用户名",
+          all("username" in x and "period" in x and "total_min" in x for x in j_all["by_user"]))
+    r = client.get("/api/stats?period=month&scope=bogus", headers=H())
+    check("统计-非法 scope 400", r.status_code == 400, r.get_json())
 
     # ---------- 用户删除保护 ----------
     r = client.delete(f"/api/users/{admin['id']}", headers=H())

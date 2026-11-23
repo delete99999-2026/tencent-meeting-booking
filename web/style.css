@@ -182,9 +182,20 @@ body {
 }
 .badge-pending { background: #fff4e0; color: #b07806; }
 .badge-booked { background: #e2f6e8; color: #1d7a3d; }
+.badge-ongoing { background: #dcecff; color: #1b5fc1; }
+.badge-ended { background: #e9edf3; color: #62708a; }
 .badge-failed { background: #fde8e6; color: #c0392b; }
 .badge-cancelled { background: #eceff3; color: #7a8699; }
 .tm-error { color: var(--danger); font-size: 12px; margin-top: 4px; max-width: 260px; }
+/* 状态异常行：淡红底提示管理员关注 */
+.row-anomaly td { background: #fff8f7; }
+.row-anomaly:hover td { background: #fdf1ef; }
+
+/* ---------- 表格复选框 / 批量操作 ---------- */
+.head-actions { display: flex; gap: 8px; align-items: center; }
+.th-check { width: 34px; }
+.td-check { width: 34px; text-align: center; }
+.th-check input, .td-check input { cursor: pointer; }
 
 /* ---------- 统计 ---------- */
 .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
@@ -233,7 +244,7 @@ body {
   cursor: pointer;
 }
 .modal-close:hover { color: var(--danger); }
-#modal-form { padding: 16px 20px 20px; }
+#modal-form, #user-form { padding: 16px 20px 20px; }
 .end-preview { font-size: 13px; color: var(--muted); min-height: 20px; margin-bottom: 6px; }
 .end-preview.warn { color: var(--danger); }
 .modal-actions {

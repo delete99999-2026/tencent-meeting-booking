@@ -53,7 +53,12 @@
       <div class="panel">
         <div class="panel-head">
           <h2>会议列表</h2>
-          <button class="btn btn-primary" id="book-open-btn">＋ 预订会议</button>
+          <div class="head-actions">
+            <button class="btn btn-danger hidden" id="batch-del-btn" disabled>删除选中（0）</button>
+            <button class="btn btn-danger hidden" id="batch-purge-btn" disabled
+                    title="从数据库彻底移除记录，不可恢复">彻底删除（0）</button>
+            <button class="btn btn-primary" id="book-open-btn">＋ 预订会议</button>
+          </div>
         </div>
         <div class="filter-bar">
           <div class="field">
@@ -71,6 +76,19 @@
           <div class="field">
             <label>主题关键字</label>
             <input type="text" id="f-subject" placeholder="模糊匹配">
+          </div>
+          <div class="field">
+            <label>会议状态</label>
+            <select id="f-status">
+              <option value="">全部状态</option>
+              <option value="upcoming">已预订（未开始）</option>
+              <option value="ongoing">会议中</option>
+              <option value="ended">已结束</option>
+              <option value="pending">预订中</option>
+              <option value="failed">预订失败</option>
+              <option value="cancelled">已取消</option>
+              <option value="anomaly">仅状态异常</option>
+            </select>
           </div>
           <div class="field">
             <label>排序</label>
@@ -95,6 +113,7 @@
           <table class="table">
             <thead>
               <tr>
+                <th class="th-check"><input type="checkbox" id="check-all" title="全选本页"></th>
                 <th>主题</th>
                 <th>开始时间</th>
                 <th>时长</th>
@@ -117,11 +136,17 @@
     <section id="tab-stats" class="tabpane hidden">
       <div class="panel">
         <div class="panel-head">
-          <h2>我的会议统计（仅已预订成功）</h2>
-          <div class="seg">
-            <button class="seg-btn active" data-period="month">按月</button>
-            <button class="seg-btn" data-period="quarter">按季</button>
-            <button class="seg-btn" data-period="year">按年</button>
+          <h2 id="stat-title">我的会议统计（仅已预订成功）</h2>
+          <div class="head-actions">
+            <div class="seg hidden" id="stat-scope-seg">
+              <button class="seg-btn active" data-scope="me">我的</button>
+              <button class="seg-btn" data-scope="all">全平台</button>
+            </div>
+            <div class="seg">
+              <button class="seg-btn active" data-period="month">按月</button>
+              <button class="seg-btn" data-period="quarter">按季</button>
+              <button class="seg-btn" data-period="year">按年</button>
+            </div>
           </div>
         </div>
         <div class="stat-summary" id="stat-summary"></div>
@@ -132,6 +157,17 @@
             </thead>
             <tbody id="stat-tbody"></tbody>
           </table>
+        </div>
+        <div id="stat-user-wrap" class="hidden">
+          <div class="panel-head"><h2>按用户明细（全平台）</h2></div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr><th>用户</th><th id="stat-user-period-th">月份</th><th>会议数</th><th>累计时长</th></tr>
+              </thead>
+              <tbody id="stat-user-tbody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -158,7 +194,8 @@
           </div>
           <div class="field">
             <label>群组（同组可见会议密码/邀请）</label>
-            <input type="text" id="nu-group" placeholder="留空表示不属于任何群组">
+            <input type="text" id="nu-group" list="group-options" placeholder="留空表示不属于任何群组">
+            <datalist id="group-options"></datalist>
           </div>
           <div class="field">
             <label>初始密码</label>
@@ -254,6 +291,44 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- 用户信息编辑弹窗（管理员） -->
+<div id="user-mask" class="modal-mask hidden">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="user-modal-title">修改用户信息</h3>
+      <button class="modal-close" id="user-close">✕</button>
+    </div>
+    <form id="user-form">
+      <input type="hidden" id="u-id">
+      <div class="field">
+        <label>用户名（登录名，2-20 位字母/数字/_/-）</label>
+        <input type="text" id="u-username" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>显示名</label>
+        <input type="text" id="u-display" maxlength="40">
+      </div>
+      <div class="field">
+        <label>角色</label>
+        <select id="u-role">
+          <option value="user">普通用户</option>
+          <option value="admin">管理员</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>群组（同组可见会议密码/邀请；留空表示不属于任何群组）</label>
+        <input type="text" id="u-group" list="group-options" maxlength="40">
+      </div>
+      <div id="user-modal-error" class="form-error"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="user-cancel">取消</button>
+        <button type="submit" class="btn btn-primary" id="user-submit">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>
