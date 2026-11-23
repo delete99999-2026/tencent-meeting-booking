@@ -22,15 +22,16 @@ class DryRunDriver(TMDriver):
         self.fail_cancel = fail_cancel
         self.calls = []  # 记录调用，便于自测断言
 
-    def book(self, subject, start_at, end_at):
+    def book(self, subject, start_at, end_at, password=None):
         with self._lock:
             time.sleep(0.2)
-            self.calls.append(("book", subject, start_at, end_at))
+            self.calls.append(("book", subject, start_at, end_at, password))
         if self.fail_book:
             return {"ok": False, "meeting_id": None, "message": "dry-run 注入失败：无法定位预定按钮"}
         with self._lock:
             mid = next(self._ids)
-        return {"ok": True, "meeting_id": str(mid), "message": "dry-run 预订成功"}
+        return {"ok": True, "meeting_id": str(mid), "message": "dry-run 预订成功",
+                "invite_link": f"https://meeting.tencent.com/dm/{mid}"}
 
     def cancel(self, tm_meeting_id, subject, start_at):
         with self._lock:

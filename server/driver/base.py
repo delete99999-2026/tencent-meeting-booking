@@ -19,8 +19,13 @@ class TMDriverError(Exception):
 
 class TMDriver(ABC):
     @abstractmethod
-    def book(self, subject: str, start_at: str, end_at: str) -> dict:
-        """预订会议。start_at/end_at 为 'YYYY-MM-DD HH:MM'（同一自然日）。"""
+    def book(self, subject: str, start_at: str, end_at: str,
+             password: str = None) -> dict:
+        """预订会议。start_at/end_at 为 'YYYY-MM-DD HH:MM'（同一自然日）。
+
+        password: 6 位数字入会密码；为空则由客户端自动生成。
+        返回可含 'invite_link'（腾讯侧入会短链），供上层展示。
+        """
 
     @abstractmethod
     def cancel(self, tm_meeting_id: str, subject: str, start_at: str) -> dict:

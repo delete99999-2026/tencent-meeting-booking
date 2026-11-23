@@ -149,7 +149,8 @@ def create_app(cfg: dict = None) -> Flask:
                                            data.get("subject", ""),
                                            data.get("start_at", ""),
                                            data.get("duration_min", 0),
-                                           int(cfg.get("lead_minutes", 5)))
+                                           int(cfg.get("lead_minutes", 5)),
+                                           data.get("meeting_password", ""))
         except services.ApiError as e:
             return _err(e)
         return jsonify(item), 201
@@ -187,6 +188,26 @@ def create_app(cfg: dict = None) -> Flask:
         except services.ApiError as e:
             return _err(e)
 
+    @app.post("/api/meetings/<int:mid>/copy-invite")
+    def api_copy_invite(mid):
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
+        try:
+            return jsonify(services.copy_invite(db_path, user, mid))
+        except services.ApiError as e:
+            return _err(e)
+
+    @app.get("/api/meetings/<int:mid>/secret")
+    def api_get_secret(mid):
+        user = current_user()
+        if user is None:
+            return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
+        try:
+            return jsonify(services.get_meeting_secret(db_path, user, mid))
+        except services.ApiError as e:
+            return _err(e)
+
     # ---------- 统计 ----------
 
     @app.get("/api/stats")
@@ -207,7 +228,8 @@ def create_app(cfg: dict = None) -> Flask:
         if user is None:
             return jsonify({"error": "未登录或登录已过期", "code": "unauthorized"}), 401
         try:
-            return jsonify(services.list_users(db_path, user))
+            return jsonify(services.list_users(db_path, user,
+                                               request.args.get("group")))
         except services.ApiError as e:
             return _err(e)
 
@@ -222,7 +244,8 @@ def create_app(cfg: dict = None) -> Flask:
                                         data.get("username", ""),
                                         data.get("password", ""),
                                         data.get("display_name", ""),
-                                        data.get("role", "user"))
+                                        data.get("role", "user"),
+                                        data.get("group_name", ""))
         except services.ApiError as e:
             return _err(e)
         return jsonify(item), 201
@@ -236,7 +259,8 @@ def create_app(cfg: dict = None) -> Flask:
         try:
             return jsonify(services.update_user(
                 db_path, user, uid,
-                data.get("display_name"), data.get("role")))
+                data.get("display_name"), data.get("role"),
+                data.get("group_name", "")))
         except services.ApiError as e:
             return _err(e)
 

@@ -146,7 +146,12 @@ function meetingOps(m) {
   const canModify = me.role === 'admin' || (isCreator && !isExpired);
   const canDelete = canModify;
   const canRetry = m.status === 'failed' && (me.role === 'admin' || isCreator);
+  // 邀请信息：创建者 / 管理员 / 同组（由后端二次校验，前端只做展示判断）
+  const canInvite = m.status !== 'cancelled'
+    && (me.role === 'admin' || isCreator || (me.group_name && m.creator_group
+      && me.group_name === m.creator_group));
   let html = '';
+  if (canInvite) html += `<button class="btn btn-mini" data-act="invite" data-id="${m.id}">复制邀请</button>`;
   if (canModify) html += `<button class="btn btn-mini" data-act="edit" data-id="${m.id}">编辑</button>`;
   if (canDelete && m.status !== 'cancelled')
     html += `<button class="btn btn-mini btn-danger" data-act="del" data-id="${m.id}">删除</button>`;
@@ -162,7 +167,7 @@ function nowStr() {
 
 function renderMeetings(rows) {
   const tb = $('meeting-tbody');
-  if (!rows.length) { tb.innerHTML = '<tr><td colspan="9" class="empty">暂无会议</td></tr>'; return; }
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="10" class="empty">暂无会议</td></tr>'; return; }
   tb.innerHTML = rows.map((m) => `
     <tr>
       <td class="td-subject">${esc(m.subject)}</td>
@@ -171,10 +176,38 @@ function renderMeetings(rows) {
       <td>${esc(m.end_at)}</td>
       <td>${esc(m.creator_display_name || m.creator_username || '（已删除用户）')}</td>
       <td>${statusTag(m.status)}${m.tm_error ? `<div class="tm-error" title="${esc(m.tm_error)}">⚠ ${esc(m.tm_error)}</div>` : ''}</td>
-      <td>${m.tm_meeting_id ? esc(m.tm_meeting_id) : '<span class="muted">-</span>'}</td>
+      <td>${m.tm_meeting_id ? esc(fmtMeetingNo(m.tm_meeting_id)) : '<span class="muted">-</span>'}</td>
+      <td>${m.meeting_password ? esc(m.meeting_password) : '<span class="muted">-</span>'}</td>
       <td>${esc(m.created_at)}</td>
       <td class="td-ops">${meetingOps(m)}</td>
     </tr>`).join('');
+}
+
+// 9 位腾讯会议号显示为 3-3-3
+function fmtMeetingNo(id) {
+  const s = String(id || '').replace(/\D/g, '');
+  return s.length === 9 ? `${s.slice(0, 3)}-${s.slice(3, 6)}-${s.slice(6)}` : String(id || '');
+}
+
+// 复制文本：优先 Clipboard API（需 https/localhost），降级 execCommand
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* 继续降级 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
 }
 
 /* ---------- 预订/编辑弹窗 ---------- */
@@ -205,6 +238,7 @@ function openModal(m) {
     sel.appendChild(opt);
   }
   sel.value = dv;
+  $('m-password').value = m ? (m.meeting_password || '') : '';
   $('modal-error').textContent = '';
   updateEndPreview();
   $('modal-mask').classList.remove('hidden');
@@ -234,9 +268,15 @@ async function submitModal() {
     start_at: fromLocalInput($('m-start').value.trim()),
     duration_min: parseInt($('m-duration').value, 10),
   };
+  const pwd = $('m-password').value.trim();
+  if (pwd) body.meeting_password = pwd;
   if (!body.subject || !body.start_at || !(body.duration_min >= 15) ||
       body.duration_min % 15 !== 0 || body.duration_min > 240) {
     $('modal-error').textContent = '请完整填写主题、开始时间，时长须为 15 分钟的倍数（最长 4 小时）';
+    return;
+  }
+  if (pwd && !/^\d{6}$/.test(pwd)) {
+    $('modal-error').textContent = '会议密码须为 6 位数字（例如 123456）';
     return;
   }
   $('modal-submit').disabled = true;
@@ -292,6 +332,7 @@ async function loadAdmin() {
       return `<tr>
         <td>${u.id}</td><td>${esc(u.username)}</td><td>${esc(u.display_name)}</td>
         <td>${u.role === 'admin' ? '<span class="badge badge-booked">管理员</span>' : '普通用户'}</td>
+        <td>${u.group_name ? esc(u.group_name) : '<span class="muted">-</span>'}</td>
         <td>${u.failed_logins}</td><td>${u.locked_until ? esc(u.locked_until) : '<span class="muted">-</span>'}</td>
         <td>${esc(u.created_at)}</td><td class="td-ops">${ops || '<span class="muted">（自己）</span>'}</td>
       </tr>`;
@@ -316,12 +357,14 @@ async function createUser() {
     display_name: $('nu-display').value.trim(),
     role: $('nu-role').value,
     password: $('nu-password').value,
+    group_name: $('nu-group').value.trim(),
   };
   if (!body.username) { toast('请输入用户名', 'error'); return; }
   try {
     const r = await api('/api/users', { method: 'POST', body });
     toast(r.message + '：' + r.password, 'success');
     $('nu-username').value = ''; $('nu-display').value = ''; $('nu-password').value = '';
+    $('nu-group').value = '';
     loadAdmin();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -357,6 +400,12 @@ function bind() {
       const data = await (async () => { try { return await api('/api/meetings'); } catch (err) { return { items: [] }; } })();
       const m = (data.items || []).find((r) => r.id === Number(id));
       if (m) openModal(m);
+    } else if (btn.dataset.act === 'invite') {
+      try {
+        const r = await api('/api/meetings/' + id + '/copy-invite', { method: 'POST' });
+        const ok = await copyText(r.text);
+        toast(ok ? '邀请信息已复制到剪贴板' : '复制失败，请手动选择：\n' + r.text, ok ? 'success' : 'error');
+      } catch (err) { toast(err.message, 'error'); }
     } else if (btn.dataset.act === 'del') {
       if (!confirm('确定删除该会议？若已预订成功将同时取消腾讯会议侧的预订。')) return;
       try { await api('/api/meetings/' + id, { method: 'DELETE' }); toast('会议已删除', 'success'); loadMeetings(); }

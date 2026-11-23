@@ -95,7 +95,8 @@ class Worker:
             db.requeue_task(self.db, task["id"], f"WTC{count}: 等待旧会议取消完成", next_run)
             return
         try:
-            r = self.driver.book(task["subject"], task["start_at"], task["end_at"])
+            r = self.driver.book(task["subject"], task["start_at"], task["end_at"],
+                                 meeting["meeting_password"])
         except TMDriverError as e:
             self._book_retry(task, meeting, f"[{e.stage}] {e.message}")
             return
@@ -107,6 +108,8 @@ class Worker:
             self._book_retry(task, meeting, r.get("message", "预订返回失败"))
             return
         db.set_meeting_booked(self.db, mid, r.get("meeting_id"))
+        if r.get("invite_link"):
+            db.set_meeting_invite_link(self.db, mid, r["invite_link"])
         db.set_task_done(self.db, task["id"])
         log.info("book 成功 meeting=%s tm_id=%s", mid, r.get("meeting_id"))
 

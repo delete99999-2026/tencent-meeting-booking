@@ -89,6 +89,16 @@ def validate_booking(subject: str, start_at: str, duration_min: int,
     return end_at
 
 
+def validate_meeting_password(password: str) -> str:
+    """会议密码：6 位数字，返回原样；非法抛 ValidationError。"""
+    if password is None or password == "":
+        return None
+    p = str(password).strip()
+    if len(p) != 6 or not p.isdigit():
+        raise ValidationError("会议密码须为 6 位数字（例如 123456）")
+    return p
+
+
 def conflicts_brief(rows) -> list:
     return [
         {
@@ -113,9 +123,12 @@ def meeting_brief(row) -> dict:
         "creator_id": row["creator_id"],
         "creator": (row["creator_username"] or "（已删除用户）"),
         "creator_display_name": row["creator_display_name"],
+        "creator_group": _col(row, "creator_group"),
         "status": row["status"],
         "tm_meeting_id": row["tm_meeting_id"],
         "tm_error": row["tm_error"],
+        "meeting_password": row["meeting_password"],
+        "invite_link": row["invite_link"],
         "attempts": row["attempts"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -140,21 +153,24 @@ def _can_modify(row, user, is_admin: bool) -> None:
 
 
 def create_meeting(db: str, user, driver, subject: str, start_at: str,
-                   duration_min: int, lead_minutes: int = 5) -> dict:
+                   duration_min: int, lead_minutes: int = 5,
+                   meeting_password: str = None) -> dict:
     end_at = validate_booking(subject, start_at, duration_min, lead_minutes)
+    password = validate_meeting_password(meeting_password)
     # R3 冲突检查（与 pending/booked 重叠即拒绝）
     conflicts = database.find_conflicts(db, start_at, end_at)
     if conflicts:
         raise ConflictError("该时间段已有其他会议，无法预订", conflicts=conflicts_brief(conflicts))
-    mid = database.create_meeting(db, subject, start_at, duration_min, end_at, user["id"])
+    mid = database.create_meeting(db, subject, start_at, duration_min, end_at, user["id"],
+                                  meeting_password=password)
     database.enqueue_task(db, "book", meeting_id=mid, subject=subject,
                     start_at=start_at, end_at=end_at)
     return meeting_brief(database.get_meeting_with_creator(db, mid))
 
 
 def get_meeting(db: str, user, mid: int) -> dict:
-    """单条会议详情；任何登录用户可看所有人的会议。"""
-    return meeting_brief(_require_meeting(db, mid))
+    """单条会议详情；任何登录用户可看所有人的会议（会议密码按权限隐藏）。"""
+    return _brief_masked(db, _require_meeting(db, mid), user)
 
 
 def list_meetings(db: str, user, args: dict) -> dict:
@@ -167,7 +183,7 @@ def list_meetings(db: str, user, args: dict) -> dict:
         sort_key=args.get("sort_key", "created_at"),
         sort_dir=args.get("sort_dir", "desc"),
     )
-    return {"items": [meeting_brief(r) for r in rows], "count": len(rows)}
+    return {"items": [_brief_masked(db, r, user) for r in rows], "count": len(rows)}
 
 
 def update_meeting(db: str, user, driver, mid: int, fields: dict,
@@ -225,6 +241,81 @@ def retry_meeting(db: str, user, mid: int) -> dict:
     return meeting_brief(database.get_meeting_with_creator(db, mid))
 
 
+# ---------------- 邀请文本 / 会议密码 / 群组 ----------------
+
+def _col(row, key, default=None):
+    """安全读列：sqlite3.Row 没有 .get()，统一走本函数。"""
+    if row is None:
+        return default
+    try:
+        v = row[key]
+    except Exception:
+        return default
+    return default if v is None else v
+
+
+def can_view_secrets(db: str, row, user) -> bool:
+    """可见会议密码/邀请文本：超级管理员、创建者本人、或同组（双方同属一个非空群组）。"""
+    if user["role"] == "admin":
+        return True
+    if row["creator_id"] == user["id"]:
+        return True
+    creator = database.get_user_by_id(db, row["creator_id"])
+    if not creator:
+        return False
+    gu = str(_col(user, "group_name", "") or "").strip()
+    gc = str(_col(creator, "group_name", "") or "").strip()
+    return gu != "" and gu == gc
+
+
+def _brief_masked(db: str, row, user) -> dict:
+    """meeting_brief + 按权限隐藏会议密码（不可见者返回 None）。"""
+    b = meeting_brief(row)
+    if not can_view_secrets(db, row, user):
+        b["meeting_password"] = None
+    return b
+
+
+def build_invite_text(row) -> str:
+    """邀请文本：主题 / 起止时间(GMT+08) / 入会链接(有则带) / 9 位会议号 3-3-3。"""
+    tid = (row["tm_meeting_id"] or "").strip()
+    if len(tid) == 9 and tid.isdigit():
+        tid_disp = f"{tid[0:3]}-{tid[3:6]}-{tid[6:9]}"
+    else:
+        tid_disp = tid
+    lines = [
+        f"主题：{row['subject']}",
+        f"时间：{row['start_at']} ~ {row['end_at']}（GMT+08）",
+    ]
+    if row["invite_link"]:
+        lines.append(f"入会链接：{row['invite_link']}")
+    if tid_disp:
+        lines.append(f"会议号：{tid_disp}")
+    else:
+        lines.append("会议号：预定成功后可见")
+    if row["meeting_password"]:
+        lines.append(f"会议密码：{row['meeting_password']}")
+    return "\n".join(lines)
+
+
+def copy_invite(db: str, user, mid: int) -> dict:
+    """复制邀请文本；创建者/超管/同组可操作。"""
+    row = _require_meeting(db, mid)
+    if row["status"] == "cancelled":
+        raise ValidationError("会议已取消，无法复制邀请信息")
+    if not can_view_secrets(db, row, user):
+        raise ForbiddenError("仅创建者、超级管理员或同组成员可复制该会议的邀请信息")
+    return {"meeting_id": mid, "text": build_invite_text(row)}
+
+
+def get_meeting_secret(db: str, user, mid: int) -> dict:
+    """查看会议密码；创建者/超管/同组可操作。"""
+    row = _require_meeting(db, mid)
+    if not can_view_secrets(db, row, user):
+        raise ForbiddenError("仅创建者、超级管理员或同组成员可查看该会议的密码")
+    return {"meeting_id": mid, "meeting_password": row["meeting_password"]}
+
+
 def get_stats(db: str, user, period: str) -> dict:
     period = (period or "month").lower()
     if period not in ("month", "quarter", "year"):
@@ -249,26 +340,31 @@ def require_admin(user) -> None:
         raise ForbiddenError("需要管理员权限")
 
 
-def list_users(db: str, user) -> dict:
+def list_users(db: str, user, group: str = None) -> dict:
     require_admin(user)
     rows = database.list_users(db)
-    return {"items": [
-        {
+    items = []
+    for r in rows:
+        g = (r["group_name"] or "").strip()
+        if group is not None and g != group.strip():
+            continue
+        items.append({
             "id": r["id"],
             "username": r["username"],
             "display_name": r["display_name"],
             "role": r["role"],
+            "group_name": g or None,
             "failed_logins": r["failed_logins"],
             "locked_until": r["locked_until"],
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
-        }
-        for r in rows
-    ], "count": len(rows)}
+        })
+    return {"items": items, "count": len(items)}
 
 
 def create_user(db: str, admin_user, username: str, password: str,
-                display_name: str = "", role: str = "user") -> dict:
+                display_name: str = "", role: str = "user",
+                group_name: str = None) -> dict:
     require_admin(admin_user)
     username = (username or "").strip()
     try:
@@ -280,12 +376,17 @@ def create_user(db: str, admin_user, username: str, password: str,
         raise ConflictError("用户名已存在")
     if not password:
         password = security.random_password()
-    uid = database.create_user(db, username, security.hash_password(password), display_name, role)
+    if group_name is not None:
+        group_name = group_name.strip() or None
+    uid = database.create_user(db, username, security.hash_password(password),
+                               display_name, role, group_name)
     return {"id": uid, "username": username, "role": role,
+            "group_name": group_name,
             "password": password, "message": "用户已创建，请妥善保管返回的密码"}
 
 
-def update_user(db: str, admin_user, uid: int, display_name: str = None, role: str = None) -> dict:
+def update_user(db: str, admin_user, uid: int, display_name: str = None, role: str = None,
+                group_name: str = None) -> dict:
     require_admin(admin_user)
     if database.get_user_by_id(db, uid) is None:
         raise NotFoundError("用户不存在")
@@ -295,10 +396,14 @@ def update_user(db: str, admin_user, uid: int, display_name: str = None, role: s
             raise ValidationError("role 须为 admin / user")
         if uid == admin_user["id"] and role != "admin":
             raise ValidationError("不能取消自己的管理员身份")
-    database.update_user_profile(db, uid, display_name, role)
+    if group_name is not None:
+        group_name = group_name.strip() or None
+    database.update_user_profile(db, uid, display_name, role, group_name)
     row = database.get_user_by_id(db, uid)
+    g = (row["group_name"] or "").strip()
     return {"id": row["id"], "username": row["username"],
-            "display_name": row["display_name"], "role": row["role"]}
+            "display_name": row["display_name"], "role": row["role"],
+            "group_name": g or None}
 
 
 def reset_user_password(db: str, admin_user, uid: int, password: str = None) -> dict:

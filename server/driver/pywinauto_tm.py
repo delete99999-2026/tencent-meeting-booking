@@ -16,6 +16,11 @@ import re
 import subprocess
 import time
 
+try:
+    from ctypes import wintypes
+except Exception:  # 非 Windows：仅类型定义，不影响导入
+    wintypes = None
+
 from server.driver.base import TMDriver, TMDriverError
 
 log = logging.getLogger("tm.pywinauto")
@@ -656,6 +661,98 @@ class PywinautoDriver(TMDriver):
         time.sleep(0.5)
         return True if label else self._set_custom_end(dlg, end_at)
 
+    def _set_meeting_password(self, dlg, password):
+        """勾选『入会密码』并填入 6 位数字密码。
+
+        控件树（WeMeet 3.48，相对对话框）：
+          CheckBox '入会密码'  rel=(85,587) 22 高
+          勾选后其下方/右侧出现密码 Edit（6 位数字，可由客户端自动生成）
+        勾选用 UIA toggle()（消息型，不依赖前台），填值用剪贴板粘贴 + 回读校验。
+        """
+        pwd = (password or "").strip()
+        if not pwd:
+            return True
+        cb = None
+        for e in dlg.descendants(control_type="CheckBox"):
+            try:
+                if (e.window_text() or "").strip() == "入会密码":
+                    cb = e
+                    break
+            except Exception:
+                continue
+        if cb is None:
+            raise TMDriverError("password", "预定对话框未找到『入会密码』复选框")
+        try:
+            state = cb.get_toggle_state()
+        except Exception:
+            state = 0
+        if state == 0:
+            try:
+                cb.toggle()
+            except Exception:
+                try:
+                    cb.click_input()
+                except Exception:
+                    pass
+            time.sleep(0.8)
+        try:
+            if cb.get_toggle_state() == 0:
+                raise TMDriverError("password", "『入会密码』勾选未生效（可能被前台窗口拦截）")
+        except TMDriverError:
+            raise
+        except Exception:
+            pass
+
+        # 密码框：勾选后出现在复选框附近（下方 0~120px、右侧 0~360px）的 Edit
+        try:
+            cbr = cb.rectangle()
+        except Exception:
+            cbr = None
+        cands = []
+        for e in dlg.descendants(control_type="Edit"):
+            try:
+                r = e.rectangle()
+                if cbr is not None:
+                    if not (cbr.top - 10 <= r.top <= cbr.top + 120):
+                        continue
+                    if r.left < cbr.left:
+                        continue
+                cands.append((r.top, r.left, e))
+            except Exception:
+                continue
+        cands.sort()
+        if not cands:
+            raise TMDriverError("password", "勾选『入会密码』后未出现密码输入框")
+        el = cands[0][2]
+        self._paste(el, pwd)
+        time.sleep(0.4)
+        got = self._read_back(el, pwd)
+        if got is False:
+            raise TMDriverError("password", "会议密码写入后回读不一致（%s）" % pwd)
+        return True
+
+    def _extract_invite_link(self):
+        """从客户端任一窗口文本里提取腾讯会议入会短链 meeting.tencent.com/dm/XXXX。"""
+        pids = set(self._client_pids())
+        rx = re.compile(r"https?://meeting\.tencent\.com/dm/[\w\-]+")
+        try:
+            for w in self._desktop().windows():
+                try:
+                    if pids and w.process_id() not in pids:
+                        continue
+                    for t, _el in self._desc_texts(w):
+                        m = rx.search(t or "")
+                        if m:
+                            return m.group(0)
+                    m = rx.search(w.window_text() or "")
+                    if m:
+                        return m.group(0)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
     def _ensure_topmost(self, win):
         """把窗口真正拉到前台并置顶，确保物理点击落在它上面。
 
@@ -721,7 +818,31 @@ class PywinautoDriver(TMDriver):
                 time.sleep(0.3)
                 if u.GetForegroundWindow() == hwnd:
                     return True
-            return u.GetForegroundWindow() == hwnd
+                # 断开的 RDP / 无显示器环境下 GetForegroundWindow() 恒为 0，
+                # 无法用前台窗口判定成败；改用命中测试：窗口中心点是否已归本窗口。
+                if self._hit_test(win, hwnd):
+                    return True
+            return u.GetForegroundWindow() == hwnd or self._hit_test(win, hwnd)
+        except Exception:
+            return False
+
+    def _hit_test(self, win, hwnd=None):
+        """窗口中心点的 WindowFromPoint 是否落在本窗口上（判断 z-order 是否在最上）。"""
+        try:
+            u = ctypes.windll.user32
+            hwnd = hwnd or getattr(win, "handle", None)
+            if not hwnd:
+                return False
+            r = wintypes.RECT()
+            u.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+            if r.right <= r.left or r.bottom <= r.top:
+                return False
+            cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+            hit = u.WindowFromPoint(wintypes.POINT(cx, cy))
+            if not hit:
+                return False
+            root = u.GetAncestor(wintypes.HWND(hit), 2)  # GA_ROOT
+            return (root or hit) == hwnd
         except Exception:
             return False
 
@@ -899,7 +1020,7 @@ class PywinautoDriver(TMDriver):
         except Exception as e:
             return "wininfo failed: %s" % e
 
-    def book(self, subject, start_at, end_at):
+    def book(self, subject, start_at, end_at, password=None):
         main = self._ensure_main()
         dlg_re = self.cfg.get("dialog_title_re", "预定会议")
         pids = self._client_pids()
@@ -944,6 +1065,13 @@ class PywinautoDriver(TMDriver):
         time.sleep(0.3)
         if not self._set_duration(dlg, duration_min, end_at):
             raise TMDriverError("duration", "时长设置失败（%d 分钟）" % duration_min)
+
+        # 入会密码（可选）：勾选『入会密码』并填入 6 位数字
+        pwd = (password or "").strip()
+        if pwd:
+            self._ensure_topmost(dlg)
+            time.sleep(0.3)
+            self._set_meeting_password(dlg, pwd)
 
         # 点『预定』+ 校验：后台服务 GUI 与客户端争夺前台，单次置顶/点击常被
         # 抵消（尤其 90 分钟档收起『选择结束时间』面板后 z-order 变化）。
@@ -998,8 +1126,12 @@ class PywinautoDriver(TMDriver):
         mid = self._extract_meeting_id(main, subject, start_at)
         # 关闭预订成功弹出的『会议号：XXX』确认窗口（否则遮挡主窗口会议列表）
         self._close_confirm_window()
+        link = self._extract_invite_link()
         msg = "预订成功" + (f"，腾讯会议号 {mid}" if mid else "（未取到会议号，取消时按主题+时间定位）")
-        return {"ok": True, "meeting_id": mid, "message": msg}
+        if pwd:
+            msg += f"，入会密码 {pwd}"
+        return {"ok": True, "meeting_id": mid, "message": msg,
+                "invite_link": link}
 
     def _close_confirm_window(self):
         """关闭『会议号：XXX』成功确认弹窗（点『关闭』按钮，兜底 Esc）。"""

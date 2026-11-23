@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name  TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
     role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin','user')),
+    group_name    TEXT,
     failed_logins INTEGER NOT NULL DEFAULT 0,
     locked_until  TEXT,
     created_at    TEXT NOT NULL,
@@ -43,6 +44,8 @@ CREATE TABLE IF NOT EXISTS meetings (
                      CHECK (status IN ('pending','booked','failed','cancelled')),
     tm_meeting_id    TEXT,
     tm_error         TEXT,
+    meeting_password TEXT,
+    invite_link      TEXT,
     attempts         INTEGER NOT NULL DEFAULT 0,
     next_attempt_at  TEXT,
     created_at       TEXT NOT NULL,
@@ -90,11 +93,25 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """旧库升级：缺列则 ALTER TABLE ADD（幂等）。"""
+    adds = [
+        ("users", "group_name", "TEXT"),
+        ("meetings", "meeting_password", "TEXT"),
+        ("meetings", "invite_link", "TEXT"),
+    ]
+    for table, col, ctype in adds:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ctype}")
+
+
 def init_db(db_path: str) -> None:
     parent = os.path.dirname(os.path.abspath(db_path))
     os.makedirs(parent, exist_ok=True)
     conn = connect(db_path)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
 
 
@@ -115,19 +132,21 @@ def get_user_by_id(db: str, uid: int):
 
 
 def create_user(db: str, username: str, password_hash: str,
-                display_name: str = "", role: str = "user") -> int:
+                display_name: str = "", role: str = "user",
+                group_name: str = None) -> int:
     ts = now_str()
     conn = connect(db)
     cur = conn.execute(
-        "INSERT INTO users (username, display_name, password_hash, role, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (username, display_name, password_hash, role, ts, ts),
+        "INSERT INTO users (username, display_name, password_hash, role, group_name, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (username, display_name, password_hash, role, group_name, ts, ts),
     )
     conn.commit()
     return cur.lastrowid
 
 
-def update_user_profile(db: str, uid: int, display_name: str = None, role: str = None) -> None:
+def update_user_profile(db: str, uid: int, display_name: str = None, role: str = None,
+                        group_name: str = None) -> None:
     sets, vals = [], []
     if display_name is not None:
         sets.append("display_name = ?")
@@ -135,6 +154,9 @@ def update_user_profile(db: str, uid: int, display_name: str = None, role: str =
     if role is not None:
         sets.append("role = ?")
         vals.append(role)
+    if group_name is not None:
+        sets.append("group_name = ?")
+        vals.append(group_name)
     sets.append("updated_at = ?")
     vals.append(now_str())
     vals.append(uid)
@@ -178,7 +200,7 @@ def delete_user(db: str, uid: int) -> None:
 def list_users(db: str):
     conn = connect(db)
     return conn.execute(
-        "SELECT id, username, display_name, role, failed_logins, locked_until, "
+        "SELECT id, username, display_name, role, group_name, failed_logins, locked_until, "
         "created_at, updated_at FROM users ORDER BY id"
     ).fetchall()
 
@@ -220,16 +242,34 @@ def purge_expired_sessions(db: str) -> int:
 # ---------------- meetings ----------------
 
 def create_meeting(db: str, subject: str, start_at: str, duration_min: int,
-                   end_at: str, creator_id: int) -> int:
+                   end_at: str, creator_id: int,
+                   meeting_password: str = None) -> int:
     ts = now_str()
     conn = connect(db)
     cur = conn.execute(
         "INSERT INTO meetings (subject, start_at, duration_min, end_at, creator_id, "
-        "status, attempts, created_at, updated_at) VALUES (?,?,?,?,?,'pending',0,?,?)",
-        (subject, start_at, duration_min, end_at, creator_id, ts, ts),
+        "status, meeting_password, attempts, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,'pending',?,0,?,?)",
+        (subject, start_at, duration_min, end_at, creator_id, meeting_password, ts, ts),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def set_meeting_password(db: str, mid: int, password: str) -> None:
+    connect(db).execute(
+        "UPDATE meetings SET meeting_password=?, updated_at=? WHERE id=?",
+        (password, now_str(), mid),
+    )
+    connect(db).commit()
+
+
+def set_meeting_invite_link(db: str, mid: int, link: str) -> None:
+    connect(db).execute(
+        "UPDATE meetings SET invite_link=?, updated_at=? WHERE id=?",
+        (link, now_str(), mid),
+    )
+    connect(db).commit()
 
 
 def get_meeting(db: str, mid: int):
@@ -241,7 +281,8 @@ def get_meeting_with_creator(db: str, mid: int):
     """JOIN 出创建者信息（用户被删时 creator_* 为 NULL）。"""
     conn = connect(db)
     return conn.execute(
-        "SELECT m.*, u.username AS creator_username, u.display_name AS creator_display_name "
+        "SELECT m.*, u.username AS creator_username, u.display_name AS creator_display_name, "
+        "u.group_name AS creator_group "
         "FROM meetings m LEFT JOIN users u ON u.id = m.creator_id WHERE m.id = ?",
         (mid,),
     ).fetchone()
@@ -328,7 +369,8 @@ def list_meetings(db: str, from_date: str = None, to_date: str = None,
                   sort_key: str = "created_at", sort_dir: str = "desc",
                   limit: int = 200):
     sql = (
-        "SELECT m.*, u.username AS creator_username, u.display_name AS creator_display_name "
+        "SELECT m.*, u.username AS creator_username, u.display_name AS creator_display_name, "
+        "u.group_name AS creator_group "
         "FROM meetings m LEFT JOIN users u ON u.id = m.creator_id WHERE 1=1"
     )
     vals = []

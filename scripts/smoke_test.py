@@ -236,6 +236,97 @@ def main():
     r = client.delete(f"/api/meetings/{pid}", headers=H())
     check("过期-管理员删除 200", r.status_code == 200)
 
+    # ---------- 会议密码 / 邀请文本 / 群组 ----------
+    # 群组：carol 与 dave 同组『气象局』；erin 属『其他组』；alice 无群组
+    r = client.post("/api/users", headers=H(), json={
+        "username": "carol", "display_name": "卡罗", "role": "user",
+        "group_name": "气象局"})
+    carol_pwd = r.get_json()["password"]
+    carol_id = r.get_json()["id"]
+    check("群组-创建带群组用户 201", r.status_code == 201 and r.get_json()["group_name"] == "气象局")
+
+    r = client.post("/api/users", headers=H(), json={
+        "username": "dave", "display_name": "戴夫", "role": "user",
+        "group_name": "气象局"})
+    dave_pwd = r.get_json()["password"]
+    r = client.post("/api/users", headers=H(), json={
+        "username": "erin", "display_name": "艾琳", "role": "user",
+        "group_name": "其他组"})
+    erin_pwd = r.get_json()["password"]
+
+    r = client.get("/api/users?group=气象局", headers=H())
+    gl = r.get_json()["items"]
+    check("群组-按群组筛选用户",
+          {u["username"] for u in gl} == {"carol", "dave"}, f"got={[u['username'] for u in gl]}")
+
+    def token_of(name, pwd):
+        rr = client.post("/api/login", json={"username": name, "password": pwd})
+        return rr.get_json()["token"]
+
+    CH = lambda: {"Authorization": "Bearer " + token_of("carol", carol_pwd)}
+    DH = lambda: {"Authorization": "Bearer " + token_of("dave", dave_pwd)}
+    EH = lambda: {"Authorization": "Bearer " + token_of("erin", erin_pwd)}
+
+    # 密码校验
+    r = client.post("/api/meetings", headers=CH(), json={
+        "subject": "带密码会议", "start_at": at(900), "duration_min": 30,
+        "meeting_password": "12345"})
+    check("密码-非 6 位 400", r.status_code == 400)
+    r = client.post("/api/meetings", headers=CH(), json={
+        "subject": "带密码会议", "start_at": at(900), "duration_min": 30,
+        "meeting_password": "abcdef"})
+    check("密码-非数字 400", r.status_code == 400)
+
+    r = client.post("/api/meetings", headers=CH(), json={
+        "subject": "带密码会议", "start_at": at(900), "duration_min": 30,
+        "meeting_password": "246810"})
+    j = r.get_json()
+    check("密码-预订成功 201", r.status_code == 201)
+    check("密码-创建者可见", j.get("meeting_password") == "246810")
+    pwd_mid = j["id"]
+    m = wait_status(db_path, pwd_mid, {"booked"}, timeout=40)
+    check("密码-已预订", m is not None)
+
+    # 同组可见 / 非同组不可见
+    r = client.get(f"/api/meetings/{pwd_mid}", headers=DH())
+    check("群组-同组可见密码", r.get_json().get("meeting_password") == "246810")
+    r = client.get(f"/api/meetings/{pwd_mid}", headers=EH())
+    check("群组-非同组密码隐藏", r.status_code == 200 and r.get_json().get("meeting_password") is None)
+    r = client.get(f"/api/meetings/{pwd_mid}", headers=H())
+    check("群组-管理员可见密码", r.get_json().get("meeting_password") == "246810")
+
+    # secret 端点
+    r = client.get(f"/api/meetings/{pwd_mid}/secret", headers=DH())
+    check("密码端点-同组 200", r.status_code == 200 and r.get_json()["meeting_password"] == "246810")
+    r = client.get(f"/api/meetings/{pwd_mid}/secret", headers=EH())
+    check("密码端点-非同组 403", r.status_code == 403)
+    r = client.get(f"/api/meetings/{pwd_mid}/secret", headers=H())
+    check("密码端点-管理员 200", r.status_code == 200)
+
+    # 邀请文本
+    r = client.post(f"/api/meetings/{pwd_mid}/copy-invite", headers=DH())
+    txt = (r.get_json() or {}).get("text", "")
+    check("邀请-同组可复制 200", r.status_code == 200 and "带密码会议" in txt)
+    check("邀请-含 GMT+08 时间", "GMT+08" in txt)
+    tid = (db.get_meeting(db_path, pwd_mid) or {})["tm_meeting_id"] if db.get_meeting(db_path, pwd_mid) else None
+    want_no = f"{tid[0:3]}-{tid[3:6]}-{tid[6:9]}" if tid and len(tid) == 9 else None
+    check("邀请-会议号 3-3-3 格式", bool(want_no) and want_no in txt, f"tid={tid} txt={txt}")
+    check("邀请-含会议密码", "会议密码：246810" in txt, txt)
+    check("邀请-含入会链接", "meeting.tencent.com/dm/" in txt, txt)
+    r = client.post(f"/api/meetings/{pwd_mid}/copy-invite", headers=EH())
+    check("邀请-非同组 403", r.status_code == 403)
+    r = client.post(f"/api/meetings/{pwd_mid}/copy-invite", headers=H())
+    check("邀请-管理员 200", r.status_code == 200)
+
+    # 列表里密码按权限隐藏
+    r = client.get("/api/meetings", headers=EH())
+    row = [m for m in r.get_json()["items"] if m["id"] == pwd_mid]
+    check("列表-非同组密码隐藏", bool(row) and row[0]["meeting_password"] is None)
+
+    # 删除 carol（同组关系随之消失）
+    r = client.delete(f"/api/users/{carol_id}", headers=H())
+    check("群组-删除用户 200", r.status_code == 200)
+
     # ---------- 列表筛选与排序 ----------
     r = client.get("/api/meetings?subject=周例会", headers=AH())
     items = r.get_json()["items"]

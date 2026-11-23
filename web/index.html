@@ -102,6 +102,7 @@
                 <th>创建者</th>
                 <th>状态</th>
                 <th>腾讯会议号</th>
+                <th>入会密码</th>
                 <th>创建时间</th>
                 <th class="th-ops">操作</th>
               </tr>
@@ -156,6 +157,10 @@
             </select>
           </div>
           <div class="field">
+            <label>群组（同组可见会议密码/邀请）</label>
+            <input type="text" id="nu-group" placeholder="留空表示不属于任何群组">
+          </div>
+          <div class="field">
             <label>初始密码</label>
             <input type="text" id="nu-password" placeholder="留空则自动生成">
           </div>
@@ -168,7 +173,7 @@
           <table class="table">
             <thead>
               <tr>
-                <th>ID</th><th>用户名</th><th>显示名</th><th>角色</th>
+                <th>ID</th><th>用户名</th><th>显示名</th><th>角色</th><th>群组</th>
                 <th>登录失败</th><th>锁定至</th><th>创建时间</th><th class="th-ops">操作</th>
               </tr>
             </thead>
@@ -234,6 +239,11 @@
         </select>
       </div>
       <div id="modal-end-preview" class="end-preview"></div>
+      <div class="field">
+        <label>入会密码（可选，6 位数字；留空则由腾讯会议自动生成）</label>
+        <input type="text" id="m-password" maxlength="6" inputmode="numeric"
+               placeholder="6 位数字，例如 123456">
+      </div>
       <div id="modal-error" class="form-error"></div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="modal-cancel">取消</button>
